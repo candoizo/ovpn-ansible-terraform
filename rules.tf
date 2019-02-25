@@ -36,3 +36,14 @@ resource "aws_security_group_rule" "tcp_ingress" {
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
 }
+
+resource "aws_security_group_rule" "tcp_egress" {
+  count = "${length(var.tcp_ports)}"
+
+  security_group_id = "${aws_security_group.tcp.id}"
+  type              = "egress"
+  from_port         = "${element(var.tcp_ports, count.index)}"
+  to_port           = "${element(var.tcp_ports, count.index)}"
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+}
