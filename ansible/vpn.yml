@@ -1,0 +1,82 @@
+# Get python installed
+- import_playbook: /home/candoizo/Code/ansible/get_py/pacman.yml
+- hosts: aws/vpn
+  vars_prompt:
+    - name: "identity"
+      prompt: "Enter a name for the server"
+      default: testvpn
+    - name: "vpnuser"
+      prompt: "Enter vpn username"
+      default: master
+    - name: "serverpw"
+      prompt: "Enter a pw for the certificate"
+  become_user: root
+
+  tasks:
+
+  # Get the packages needed to build our docker image
+  - set_fact:
+      bdir: "/root/vpn_build"
+      pubip: "{{lookup('file', '../ip.txt') }}"
+  - name: "Install docker stuff"
+    pacman:
+      pkg:  sudo, git, docker, python-pip, python-pexpect
+      state: present
+  - pip:
+      name: docker
+      state: present
+    register: no_pip
+  - reboot:
+    when: no_pip.changed
+
+  # Start docker and pull the image
+  - service:
+      name: docker
+      state: started
+
+  - file:
+      path: "{{ bdir }}"
+      state: absent
+  - git:
+      repo: https://github.com/kylemanna/docker-openvpn.git
+      dest: "{{ bdir }}/docker-openvpn"
+  - file:
+      path: /root/vpn_build/vpn-data
+      state: directory
+  - shell: "docker build -t {{ identity }} ."
+    args:
+      chdir: "{{ bdir }}/docker-openvpn"
+  # - docker_container:
+  #     name: myopenvpn
+  #     state: present
+  #     image: kylemanna/openvpn:latest
+  - name: "Generate vpn data"
+    shell: "docker run -v {{ bdir }}/vpn-data:/etc/openvpn --rm {{ vars.identity }} ovpn_genconfig -u udp://{{ pubip }}:3000"
+    args:
+      chdir: "{{ bdir }}"
+  - name: "Generate server certificates (This will take a couple minutes!)"
+    expect:
+      command: "docker run -v {{ bdir }}/vpn-data:/etc/openvpn --rm -it {{ vars.identity }} ovpn_initpki"
+      chdir: "{{ bdir }}"
+      timeout: 600
+      responses:
+        "  Confirm removal. ": "yes"
+        "Enter New CA Key Passphrase. ": "{{ vars.serverpw }}"
+        "Re-Enter New CA Key Passphrase. ": "{{ vars.serverpw }}"
+        "Common Name" : "{{ vars.identity }}"
+        "Enter pass phrase for /etc/openvpn/pki/private/ca.key:" : "{{ vars.serverpw }}"
+
+  - name: "Add user to vpn database"
+    expect:
+      command: "docker run -v {{ bdir }}/vpn-data:/etc/openvpn --rm -it {{ vars.identity }} easyrsa build-client-full {{ vars.vpnuser }} nopass"
+      chdir: "{{ bdir }}"
+      responses:
+        "Enter pass phrase for" : "{{ vars.serverpw }}"
+
+  - name: "Generate .ovpn file for client user login"
+    shell: "docker run -v {{ bdir }}/vpn-data:/etc/openvpn --rm {{ vars.identity }} ovpn_getclient {{ vars.vpnuser }} > {{ vars.vpnuser }}.ovpn"
+    args:
+      chdir: "{{ bdir }}"
+
+  - name: "Run the VPN server and now it is ready for a connection!"
+    shell: "docker run -v {{ bdir }}/vpn-data:/etc/openvpn -d -p 3000:1194/udp --cap-add=NET_ADMIN {{ vars.identity }}"
